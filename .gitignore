@@ -1,0 +1,10 @@
+.codex/
+__pycache__/
+*.pyc
+.DS_Store
+build/
+
+# Akai's copyrighted firmware and documents: fetched locally, never committed
+stock/
+backup/
+sources/
