@@ -96,21 +96,25 @@ The full list of controls is in the **[user manual](docs/MANUAL.md)**.
 ### What you need
 - An **Akai MPK mini mk3** with USB product ID **0x0049**. That's most units. To check on macOS, open System
   Information → USB → *MPK mini 3*. Units with ID 0x1049 use a different chip and are not supported yet.
-- A computer with **Python 3**. To build the firmware yourself you also need the **ARM GCC toolchain**.
+- A computer with **Python 3** and this repository (*Code → Download ZIP*, or `git clone`).
 
 ```bash
 pip3 install mido python-rtmidi hidapi
 ```
 
 ### 1. Get Akai's original firmware (one time)
-OPENMPK3 keeps Akai's updater inside every image, so the build needs Akai's official firmware file. This script
+OPENMPK3 keeps Akai's updater inside the keyboard, so flashing needs Akai's official firmware file. This script
 downloads it straight from Akai's server and checks it. It's also your way back to stock.
 
 ```bash
 python3 tools/get_stock_firmware.py
 ```
 
-### 2. Build OPENMPK3
+### 2. Get OPENMPK3
+Download the latest **`openmpk3-vX.Y.bin`** from the [Releases page](../../releases/latest) and put it in the
+repository folder. No compiler needed.
+
+Or build it yourself (needs the ARM GCC toolchain):
 
 ```bash
 cd firmware && make        # result: firmware/build/openmpk3_full.bin
@@ -122,10 +126,14 @@ Unplug it. **Hold BANK A/B + PROG SELECT** and plug it back in. The screen says 
 ### 4. Flash
 
 ```bash
-python3 tools/mpk_flash.py flash firmware/build/openmpk3_full.bin --write
+python3 tools/mpk_flash.py flash openmpk3-v0.8.bin --write          # a downloaded release
+python3 tools/mpk_flash.py flash firmware/build/openmpk3_full.bin --write   # or your own build
 ```
 
 After about 40 seconds the keyboard restarts as **OPENMPK3**. Open the [manual](docs/MANUAL.md) and start playing.
+
+> Release files contain **only OPENMPK3's own code**. The flasher adds Akai's bootloader from the file you
+> downloaded in step 1, exactly as the build does. No Akai firmware is ever distributed here.
 
 ### Going back to the original firmware
 Enter update mode again (step 3), then flash Akai's file:

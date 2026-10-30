@@ -9,7 +9,7 @@ Enter update mode: unplug, hold BANK + PROG SELECT, plug USB in (screen shows "U
 Protocol + safety analysis: .codex/UPDATE_PROTOCOL.md. The bootloader never writes 0x0000-0x3FFF;
 images are refused unless 0x0000-0x7FFF equals the stock bootloader (the stock app copies 0x4000->0x0).
 """
-import argparse, hashlib, struct, sys, time
+import argparse, hashlib, os, struct, sys, time
 import hid
 
 VID, PID = 0x09E8, 0x0049
@@ -62,8 +62,27 @@ def probe(d):
     if r[2] == 0xF4: return "bootloader", f"{r[3]:02X}.{r[4]:02X}"
     return "unknown", r.hex()
 
+STOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stock", "MPKmini3_v1.26_STM32F070_pid0049.bin")
+
+def load_image(path):
+    """A full 128 KiB image is used as is. A release file (OPENMPK3 app only, no Akai code) is combined here with
+    Akai's bootloader from stock/ - the same thing the build does - so releases never contain Akai firmware."""
+    data = open(path, "rb").read()
+    if len(data) == IMG_SIZE:
+        return data
+    sp, rv = struct.unpack_from("<II", data, 0) if len(data) >= 8 else (0, 0)
+    if not (0x20000000 < sp <= 0x20004000 and rv & 1 and 0x08008000 <= rv < 0x08015000):
+        sys.exit("not a 128 KiB image and not an OPENMPK3 app binary")
+    if not os.path.exists(STOCK):
+        sys.exit("this is an OPENMPK3 release file: it needs Akai's bootloader, which is not distributed with it.\n"
+                 "Run once:  python3 tools/get_stock_firmware.py   (downloads it from Akai's server)")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import mkimage
+    print(f"release file: adding Akai's bootloader from {os.path.relpath(STOCK)}")
+    return mkimage.build(open(STOCK, "rb").read(), data, (0x02, 0x00))
+
 def flash(path, write):
-    img = validate(open(path, "rb").read())
+    img = validate(load_image(path))
     print(f"image OK: {path}  version {img[0x1FFF6]:02X}.{img[0x1FFF7]:02X}  sha256 {hashlib.sha256(img).hexdigest()[:16]}")
     d = Dev(); mode, ver = probe(d)
     if mode != "bootloader":

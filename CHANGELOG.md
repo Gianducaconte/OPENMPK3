@@ -1,6 +1,8 @@
 # Changelog
 
 ## v0.8 (2026-10-08)
+- **Releases:** prebuilt firmware files contain only OPENMPK3's code. `tools/mpk_flash.py` adds Akai's bootloader
+  from `tools/get_stock_firmware.py`, so no compiler is needed and no Akai code is redistributed.
 - **Fix: stuck notes when overdubbing several MIDI channels.** The effects stage counted sounding notes per pitch
   instead of per (channel, pitch). When the loop played a C on channel 1 while you played a C on channel 2, the
   channel 1 note-off was swallowed and the note hung. Each channel now has its own count, and a note-off releases
