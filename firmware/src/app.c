@@ -471,6 +471,7 @@ static const menu_t MENU[] = {
     { "Scale chords", &S.scale_chords, 0, F_COUNT - 1, FLAVOUR_NAMES },
     { "Velocity",     &S.vel_curve,   0, VEL_CURVE_COUNT - 1, VEL_NAMES },
     { "Key sensitiv", &S.vel_sens,    5, 20, NULL },
+    { "Program", &S.midi_program,    0, 127, NULL },
     { "MIDI channel", &S.midi_ch,     0, 15, NULL },
     { "Quantize",     &S.loop_quant,  0, 1, ONOFF },
     { "Quant grid",   &S.quant_grid,  0, 5, QUANT_GRID_NAMES },
@@ -492,6 +493,7 @@ void menu_item(int i, const char **name, char *value, int vlen)
 {
     const menu_t *m = &MENU[i]; *name = m->name;
     if (m->labels) snprintf(value, (size_t)vlen, "%s", m->labels[*m->p]);
+    else if(m->p == &S.midi_program) snprintf(value, (size_t)vlen, "%d", *m->p);
     else snprintf(value, (size_t)vlen, "%d", m->lo ? *m->p : *m->p + 1);
 }
 void menu_adjust(int sel, int d)
@@ -499,6 +501,10 @@ void menu_adjust(int sel, int d)
     const menu_t *m = &MENU[sel];
     int v = clampi(*m->p + d, m->lo, m->hi);
     if (m->p == &S.midi_ch) { set_midi_channel((uint8_t)v); settings_touch(); return; }
+    if(m->p == &S.midi_program){
+        if(v != *m->p){ *m->p = (uint8_t)v; midi3((uint8_t)(0xC0 | S.midi_ch), *m->p, 0); settings_touch(); }
+        return;
+    }
     if (v != *m->p) { all_notes_off(); *m->p = (uint8_t)v; sync_all(); settings_touch(); }
 }
 

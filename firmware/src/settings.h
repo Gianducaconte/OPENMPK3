@@ -32,6 +32,7 @@ typedef struct {
     int8_t   fx_shift;
     uint8_t  fx_accent;
     uint8_t  te_pin2, clk_out_ppqn;   /* TE1 pin 2 (PA14): 0 reset in, 1 clock out; out rate 0=4,1=1,2=2,3=24 PPQN */
+    uint8_t  midi_program;
     uint8_t  reserved[5];
     uint16_t checksum;
 } settings_t;
