@@ -144,11 +144,18 @@ After Generate or Mutate, **SHIFT + PLAY** goes back to the pattern as it was be
 | **Joystick** | X: pitch bend · Y: mod wheel (CC1) |
 | **Pedal** | Sustain (CC64) |
 | **PROG CHANGE** | Opens the menu. **K1** picks a setting, **K2** changes it, PROG CHANGE again closes it |
+| **PROG CHANGE + CC** | Release without turning a knob to toggle the knobs between music and MIDI CC mode |
+| **Hold PROG CHANGE + CC, then turn a knob** | Assign that knob's CC number (0–127); release without toggling the mode |
+
+In MIDI CC mode, each knob sends an absolute value from 0 to 127 on the current MIDI channel. Values start at 0
+when the keyboard starts; CC assignments default to 70–77, and both assignments and knob mode are saved automatically. SHIFT still accesses the
+effects layer, and PROG CHANGE still opens the menu. The PROG CHANGE LED blinks in CC mode. The menu and
+PLAY actions occur when their button is released, so either button can be pressed first for the shortcut.
 
 **Menu settings:**
 
 - **Keys:** Key map, Scale chords, Velocity curve, Key sensitivity
-- **MIDI:** MIDI channel
+- **MIDI:** MIDI channel, Program (0–127; changing it sends a program change on the current channel)
 - **Looper:** Quantize on/off and grid
 - **Clock:** Clock source, Clock out (USB), Clock in TE1, Clock-in rate and input type, TE1 pin 2 (reset in / clock out), Clock-out rate
 - **Arp and repeat:** Arp gate, Arp accent, Repeat rate

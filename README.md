@@ -46,7 +46,7 @@ hardware synth. Nothing to install on the computer.
 |---|---|---|
 | **Keys** | Any note, chromatic | Locked to one of 35 scales, so every key sounds right. Chromatic is still available |
 | **Pads** | Drum notes, CC or program change | Chords from the current scale, or from one of **103 styles** |
-| **Knobs** | Send MIDI CC | Key, scale/style, voicing, MIDI channel, loop length, tempo, plus 10 effects with SHIFT |
+| **Knobs** | Send MIDI CC | Music controls and SHIFT effects, or assignable MIDI CC via PROG CHANGE + CC |
 | **Arpeggiator** | 6 modes | 13 modes, set with the labels printed above the keys |
 | **Looper** | None | Overdub looper with 8 patterns, undo, several MIDI channels in one loop |
 | **Effects** | None | Echo, strum, harmony, octaver, ratchet, trance gate, stutter, half/double time, ... |
@@ -86,6 +86,13 @@ hardware synth. Nothing to install on the computer.
 - **Stutter** repeats a slice of the loop, and **half/double time** changes its speed.
 - **Generate** writes a new chord-and-melody pattern. **Mutate** varies it. **Evolve** lets the loop change slowly by
   itself while you play over it.
+
+### 🎛️ MIDI controls
+- **Program change:** press PROG CHANGE, select **Program** with K1, and turn K2 to send a program change from
+  0–127 on the current MIDI channel. Press PROG CHANGE again to close the menu.
+- **Assignable CC knobs:** press PROG CHANGE + CC and release without turning a knob to toggle MIDI CC mode.
+  To assign a CC number (0–127), hold both buttons and turn the knob; release without toggling the mode.
+  Assignments and mode are saved automatically. SHIFT still accesses the effects.
 
 The full list of controls is in the **[user manual](docs/MANUAL.md)**.
 
@@ -249,3 +256,49 @@ MIT; CMSIS: Apache-2.0).
 OPENMPK3 is an independent community project. It is **not affiliated with, endorsed by, or supported by Akai
 Professional or inMusic Brands**. "Akai", "MPK" and "MPK mini" are trademarks of their respective owners. This
 repository contains no Akai firmware. The stock image is downloaded from Akai's server by the user.
+
+
+## addendum
+
+To fix python hidapi permissions, add this file /etc/udev/rules.d/69-hid.rules
+
+```bash
+# This is a sample udev file for HIDAPI devices which lets unprivileged
+# users who are physically present at the system (not remote users) access
+# HID devices.
+
+# If you are using the libusb implementation of hidapi (libusb/hid.c), then
+# use something like the following line, substituting the VID and PID with
+# those of your device.
+
+# HIDAPI/libusb
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="09e8", ATTRS{idProduct}=="0049", TAG+="uaccess"
+
+# If you are using the hidraw implementation (linux/hid.c), then do something
+# like the following, substituting the VID and PID with your device.
+
+# HIDAPI/hidraw
+KERNEL=="hidraw*", ATTRS{idVendor}=="09e8", ATTRS{idProduct}=="0049", TAG+="uaccess"
+
+# Once done, optionally rename this file for your application, and drop it into
+# /etc/udev/rules.d/.
+# NOTE: these rules must have priority before 73-seat-late.rules.
+# (Small discussion/explanation in systemd repo:
+#  https://github.com/systemd/systemd/issues/4288#issuecomment-348166161)
+# for example, name the file /etc/udev/rules.d/70-my-application-hid.rules.
+# Then, replug your device or run:
+# sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# Note that the hexadecimal values for VID and PID are case sensitive and
+# must be lower case.
+
+# TAG+="uaccess" only gives permission to physically present users, which
+# is appropriate in most scenarios. If you require access to the device
+# from a remote session (e.g. over SSH), add
+# GROUP="plugdev", MODE="660"
+# to the end of the udev rule lines, add your user to the plugdev group with:
+# usermod -aG plugdev USERNAME
+# then log out and log back in (or restart the system).
+
+
+```

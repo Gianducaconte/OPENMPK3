@@ -392,6 +392,8 @@ static void pad_on(int pad, uint8_t vel)
 
 /* ------------------------------------------------------------------ knobs */
 static int knob_acc[8];
+static uint8_t knob_cc_value[8];
+static bool prog_pending, cc_pending, cc_assign, cc_assign_turned;
 
 static bool step_enum(int k, int d, uint8_t *v, int lo, int hi)
 {
@@ -413,6 +415,14 @@ static void stutter_set(uint8_t s);
 static void knob(int k, int d)
 {
     char v[24];
+    if (cc_assign) {
+        cc_assign_turned = true;
+        uint8_t cc = (uint8_t)clampi(S.knob_cc[k] + d, 0, 127);
+        if (cc != S.knob_cc[k]) { S.knob_cc[k] = cc; settings_touch(); }
+        char title[16]; snprintf(title, sizeof title, "K%d CC NUMBER", k + 1);
+        snprintf(v, sizeof v, "%d", cc); popup(title, v, -1);
+        return;
+    }
     if (U.menu_open) {
         if (k == 0) { uint8_t s = U.menu_sel; if (step_enum(k, d, &s, 0, menu_count() - 1)) U.menu_sel = s; }
         if (k == 1) { knob_acc[1] += d; int st = knob_acc[1] / 4; if (st) { knob_acc[1] -= st * 4; menu_adjust(U.menu_sel, st); } }
@@ -443,6 +453,14 @@ static void knob(int k, int d)
         sync_all(); settings_touch();
         return;
     }
+    if (S.cc_mode) {
+        uint8_t value = (uint8_t)clampi(knob_cc_value[k] + d, 0, 127);
+        knob_cc_value[k] = value;
+        midi3((uint8_t)(0xB0 | S.midi_ch), S.knob_cc[k], value);
+        char title[16]; snprintf(title, sizeof title, "K%d CC %d", k + 1, S.knob_cc[k]);
+        snprintf(v, sizeof v, "%d", value); popup(title, v, -1);
+        return;
+    }
     switch (k) {                                     /* MUSIC layer */
     case 0: if (step_enum(k, d, &S.root, 0, 11)) popup("KEY", NOTE_NAMES[S.root], -1); break;
     case 1: { uint8_t s = S.sound;
@@ -471,6 +489,7 @@ static const menu_t MENU[] = {
     { "Scale chords", &S.scale_chords, 0, F_COUNT - 1, FLAVOUR_NAMES },
     { "Velocity",     &S.vel_curve,   0, VEL_CURVE_COUNT - 1, VEL_NAMES },
     { "Key sensitiv", &S.vel_sens,    5, 20, NULL },
+    { "Program", &S.midi_program,    0, 127, NULL },
     { "MIDI channel", &S.midi_ch,     0, 15, NULL },
     { "Quantize",     &S.loop_quant,  0, 1, ONOFF },
     { "Quant grid",   &S.quant_grid,  0, 5, QUANT_GRID_NAMES },
@@ -492,6 +511,7 @@ void menu_item(int i, const char **name, char *value, int vlen)
 {
     const menu_t *m = &MENU[i]; *name = m->name;
     if (m->labels) snprintf(value, (size_t)vlen, "%s", m->labels[*m->p]);
+    else if(m->p == &S.midi_program) snprintf(value, (size_t)vlen, "%d", *m->p);
     else snprintf(value, (size_t)vlen, "%d", m->lo ? *m->p : *m->p + 1);
 }
 void menu_adjust(int sel, int d)
@@ -499,6 +519,10 @@ void menu_adjust(int sel, int d)
     const menu_t *m = &MENU[sel];
     int v = clampi(*m->p + d, m->lo, m->hi);
     if (m->p == &S.midi_ch) { set_midi_channel((uint8_t)v); settings_touch(); return; }
+    if(m->p == &S.midi_program){
+        if(v != *m->p){ *m->p = (uint8_t)v; midi3((uint8_t)(0xC0 | S.midi_ch), *m->p, 0); settings_touch(); }
+        return;
+    }
     if (v != *m->p) { all_notes_off(); *m->p = (uint8_t)v; sync_all(); settings_touch(); }
 }
 
@@ -574,6 +598,25 @@ static void loop_update_inner(void)
 /* ------------------------------------------------------------------ buttons */
 static bool oct_up_held, oct_dn_held;
 
+static void cc_assign_begin(void)
+{
+    cc_assign = true; cc_assign_turned = false;
+    U.menu_open = false;
+    popup("CC ASSIGN", "Turn a knob", -1);
+}
+
+static void button_play(void)
+{
+    if (LOOP.playing) {
+        uint16_t chans = loop_channels();
+        looper_play(&LOOP, false); U.pending_slot = -1; stutter = 0;
+        fx_panic(); midi_panic(chans);
+        for (int n = 0; n < 128; n++) U.note_count[n] = 0;
+        pattern_persist(); popup("LOOPER", "Stop", -1);
+    }
+    else { U.rec_armed = false; U.loop_resume = false; loop_start(); popup("LOOPER", looper_empty(&LOOP) ? "Play (empty)" : "Play", -1); }
+}
+
 static void button_down(int b)
 {
     char v[20];
@@ -591,7 +634,9 @@ static void button_down(int b)
             if (U.save_armed) U.pop_until = g_ms + 60000;
             break;
         }
-        U.menu_open = !U.menu_open; knob_acc[0] = knob_acc[1] = 0; if (!U.menu_open) settings_touch(); break;
+        prog_pending = true;
+        if (cc_pending) cc_assign_begin();
+        break;
     case BTN_BANK:                                   /* = REC */
         if (U.shift) { U.rec_clear = 1; break; }     /* SHIFT + REC: + pad = clear pattern, alone = clear channel */
         if (!LOOP.playing) {                         /* stopped: arm, the first note played starts the loop */
@@ -616,14 +661,8 @@ static void button_down(int b)
             undo_arm(UNDO_UNDO, 0);
             break;
         }
-        if (LOOP.playing) {
-            uint16_t chans = loop_channels();
-            looper_play(&LOOP, false); U.pending_slot = -1; stutter = 0;
-            fx_panic(); midi_panic(chans);           /* stop = silence, whatever got stuck (a latched arp keeps going) */
-            for (int n = 0; n < 128; n++) U.note_count[n] = 0;
-            pattern_persist(); popup("LOOPER", "Stop", -1);
-        }
-        else { U.rec_armed = false; U.loop_resume = false; loop_start(); popup("LOOPER", looper_empty(&LOOP) ? "Play (empty)" : "Play", -1); }
+        cc_pending = true;
+        if (prog_pending) cc_assign_begin();
         break;
     case BTN_TAP:
         if (U.shift) { do_mutate(15, true); break; }               /* SHIFT + TAP = mutate */
@@ -659,8 +698,30 @@ static void button_down(int b)
 
 static void button_up(int b)
 {
+    if ((b == BTN_PROG_CHANGE || b == BTN_CC) && cc_assign) {
+        if (!cc_assign_turned) {
+            S.cc_mode = !S.cc_mode;
+            memset(knob_acc, 0, sizeof knob_acc);
+            settings_touch();
+            popup("KNOB MODE", S.cc_mode ? "MIDI CC" : "Music", -1);
+        }
+        cc_assign = prog_pending = cc_pending = false;
+        return;
+    }
     switch (b) {
     case BTN_PROG_SELECT: U.shift = false; break;
+    case BTN_PROG_CHANGE:
+        if (prog_pending) {
+            U.menu_open = !U.menu_open;
+            knob_acc[0] = knob_acc[1] = 0;
+            if (!U.menu_open) settings_touch();
+        }
+        prog_pending = false;
+        break;
+    case BTN_CC:
+        if (cc_pending) button_play();
+        cc_pending = false;
+        break;
     case BTN_BANK:
         if (U.rec_clear == 1) {                      /* SHIFT + REC released without a pad: clear this channel */
             char v[16];
@@ -786,7 +847,7 @@ static void leds(void)
     led_set(LED_BANK_B, looper_empty(&LOOP) ? 0 : (loop_top ? 32 : 6));                 /* loop has content */
     led_set(LED_CC, !LOOP.playing ? DIM :                                                /* PLAY: blinks on the beat, */
                     beat_phase < 120 ? 32 : (loop_top ? 12 : 0));                        /* glow on the loop's first beat */
-    led_set(LED_PROG_CHANGE, U.menu_open ? 32 : DIM);
+    led_set(LED_PROG_CHANGE, U.menu_open ? 32 : S.cc_mode ? (((g_ms / 50) & 1) ? 32 : DIM) : DIM);
     led_set(LED_PROG_SELECT, U.shift ? 32 : DIM);
     led_set(LED_ARP, S.arp_on ? 32 : DIM);
     led_set(LED_TAP, beat_phase < 60 ? 32 : DIM);
