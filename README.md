@@ -46,7 +46,7 @@ hardware synth. Nothing to install on the computer.
 |---|---|---|
 | **Keys** | Any note, chromatic | Locked to one of 35 scales, so every key sounds right. Chromatic is still available |
 | **Pads** | Drum notes, CC or program change | Chords from the current scale, or from one of **103 styles** |
-| **Knobs** | Send MIDI CC | Key, scale/style, voicing, MIDI channel, loop length, tempo, plus 10 effects with SHIFT |
+| **Knobs** | Send MIDI CC | Music controls and SHIFT effects, or assignable MIDI CC via PROG CHANGE + CC |
 | **Arpeggiator** | 6 modes | 13 modes, set with the labels printed above the keys |
 | **Looper** | None | Overdub looper with 8 patterns, undo, several MIDI channels in one loop |
 | **Effects** | None | Echo, strum, harmony, octaver, ratchet, trance gate, stutter, half/double time, ... |
@@ -86,6 +86,13 @@ hardware synth. Nothing to install on the computer.
 - **Stutter** repeats a slice of the loop, and **half/double time** changes its speed.
 - **Generate** writes a new chord-and-melody pattern. **Mutate** varies it. **Evolve** lets the loop change slowly by
   itself while you play over it.
+
+### 🎛️ MIDI controls
+- **Program change:** press PROG CHANGE, select **Program** with K1, and turn K2 to send a program change from
+  0–127 on the current MIDI channel. Press PROG CHANGE again to close the menu.
+- **Assignable CC knobs:** press PROG CHANGE + CC and release without turning a knob to toggle MIDI CC mode.
+  To assign a CC number (0–127), hold both buttons and turn the knob; release without toggling the mode.
+  Assignments and mode are saved automatically. SHIFT still accesses the effects.
 
 The full list of controls is in the **[user manual](docs/MANUAL.md)**.
 
