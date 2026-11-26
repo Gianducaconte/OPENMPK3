@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.9 (2026-11-26)
+Looper fixes for recording, overdubbing, undo and clear, mostly with several MIDI channels.
+- **Clearing or undoing one channel no longer silences the others.** Undo and clear used to copy the whole loop
+  to flash first. That froze the device for about 0.15 s, cut every note the loop was playing on all channels (long
+  chords stayed silent until they came round again, so they sounded deleted) and turned recording off. Undo and
+  clear are now instant and touch only what they remove. Repeating the shortcut still brings it back.
+- **Each channel is its own part.** Changing MIDI channel while recording starts a new part, so undo removes
+  only the last channel's part. Before, a whole recording pass across several channels was undone at once.
+- **Fix: stuck notes when the loop plays the same note twice at the same moment.** This happens when you overdub
+  the same chord with quantize on, use two pads that share a note, or use Generate. The strum stage turned the note
+  on twice but off only once, so it hung until Stop. This was the main source of stuck notes while overdubbing.
+- **Fix: notes that never stopped.** All of these could store a note-on without a note-off, or play a note
+  without ever ending it:
+  - a very short note: a quick tap, or the arp with a short gate at a fast rate
+  - running out of loop memory
+  - holding more than 16 notes while recording
+  - shortening the loop with K7 while notes lay past the new end
+  - Mutate/Evolve on a pattern where two parts had the same note on the same channel, followed by undo
+- **A note held all the way round the loop** now sustains for the whole loop. Before, it was cut to whatever was
+  left past one loop (or became a short blip if released on exactly the same spot).
+- **Fix: queued pattern switch.** Changes made after queueing a switch (SHIFT + pad while playing) are now saved
+  before the switch, instead of being lost. Repeating a clear/undo shortcut after the switch no longer restores
+  into the wrong pattern.
+- **Fix: jumps in the loop position.** A MIDI Start, Song Position Pointer or TE1 reset while the loop was running,
+  or a longer loop length on K7, could fire many loop notes at once or leave one hanging. The loop now jumps cleanly.
+- **Sync:** after MIDI Start the loop is exactly on Ableton's first clock (it was one 1/24-beat tick early). MIDI
+  Continue resumes from the Song Position Pointer, also at half/double speed. A Song Position Pointer that matches
+  where the loop already is (a DAW loop wrapping, a reset pulse every bar) leaves it alone. One sent while Ableton
+  is stopped no longer moves a loop that's playing on its own clock.
+- Turning the arp on/off or changing a menu setting no longer cuts the loop's notes.
+- `LOOP FULL` shows when the pattern memory is full and new notes aren't being recorded.
+- **Styles are grouped by family** (Pop, Ballads and sad, Soul, Lo-Fi, Jazz and Latin, Electronic, Rock, Cinematic,
+  World), with variants side by side: Jazz 1-6, Synthwave 1-4, and so on. City Pop, Gospel, Bossa, House and Celtic
+  are now "... 1" next to their "... 2". The K2 popup shows the style number (001-103) top right. The numbered list
+  is in the manual.
+
 ## v0.8 (2026-10-08)
 - **Releases:** prebuilt firmware files contain only OPENMPK3's code. `tools/mpk_flash.py` adds Akai's bootloader
   from `tools/get_stock_firmware.py`, so no compiler is needed and no Akai code is redistributed.

@@ -127,6 +127,9 @@ void fx_note(uint8_t ch, uint8_t note, uint8_t vel, uint32_t now, uint8_t from)
                 else if (!(src[s].fired >> o & 1))
                     for (int i = 0; i < NQ; i++) if (q[i].used && q[i].s == s && q[i].o == o) q[i].used = false;
             }
+            /* released before its strum group started it (a retrigger, or a release in the same pass): drop it
+             * from the group, or the group would start a note nobody ends - twice, once the slot is reused */
+            for (int g = 0; g < ngrp; ) { if (grp[g].s == s) grp[g] = grp[--ngrp]; else g++; }
             src[s].used = false;
         }
         return;

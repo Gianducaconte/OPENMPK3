@@ -9,6 +9,7 @@
 
 typedef struct {
     char     pop_title[16], pop_value[20];
+    char     pop_tag[6];       /* top-right of the popup: the style number, e.g. "042" */
     int16_t  pop_bar;          /* 0..1000 or -1 for none */
     uint32_t pop_until;
     bool     menu_open;

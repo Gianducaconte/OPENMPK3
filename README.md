@@ -126,7 +126,7 @@ Unplug it. **Hold BANK A/B + PROG SELECT** and plug it back in. The screen says 
 ### 4. Flash
 
 ```bash
-python3 tools/mpk_flash.py flash openmpk3-v0.8.bin --write          # a downloaded release
+python3 tools/mpk_flash.py flash openmpk3-v0.9.bin --write          # a downloaded release
 python3 tools/mpk_flash.py flash firmware/build/openmpk3_full.bin --write   # or your own build
 ```
 

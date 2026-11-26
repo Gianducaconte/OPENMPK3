@@ -48,6 +48,7 @@ static void set_midi_channel(uint8_t ch)
     midi3((uint8_t)(0xB0 | old), 1, 0);             /* mod wheel off */
     if (pedal_is_down) { midi3((uint8_t)(0xB0 | old), 64, 0); midi3((uint8_t)(0xB0 | ch), 64, 127); }   /* move sustain */
     S.midi_ch = ch;
+    looper_new_pass(&LOOP);                          /* recording: each channel is its own part, so undo takes one */
 }
 
 /* K2 list: every scale except Chromatic (diatonic chords on the pads), then every style pack */
@@ -107,16 +108,13 @@ static void midi_note_out(uint8_t ch, uint8_t n, uint8_t v) /* final output, aft
     else   { midi3((uint8_t)(0x80 | ch), n, 0); if (U.note_count[n]) U.note_count[n]--; }
 }
 static fx_cfg_t FX = { .out = midi_note_out };
-static void raw_note(uint8_t ch, uint8_t n, uint8_t v)      /* v = 0 -> off; not recorded; through the effects */
-{
-    fx_note(ch, n, v, g_ms, FXS_LIVE);
-}
 static void loop_start(void);
 static void loop_update(void);
+static void popup(const char *title, const char *value, int bar);
 static uint16_t loop_channels(void)                  /* bitmask of MIDI channels present in the loop + current */
 {
     uint16_t m = (uint16_t)(1u << S.midi_ch);
-    for (int i = 0; i < LOOP.n; i++) m |= (uint16_t)(1u << (LOOP.ev[i].ch & 15));
+    for (int i = 0; i < LOOP.n; i++) if (looper_ev_visible(&LOOP.ev[i])) m |= (uint16_t)(1u << (LOOP.ev[i].ch & 15));
     return m;
 }
 static uint8_t live_from = FXS_LIVE;                 /* FXS_ARP while the arp is playing a note */
@@ -129,7 +127,9 @@ static void live_note(uint8_t ch, uint8_t n, uint8_t v)     /* what the player d
         looper_record(&LOOP, true);
     }
     fx_note(ch, n, v, g_ms, live_from);
+    bool was_full = LOOP.full;
     looper_input(&LOOP, ch, n, v);
+    if (LOOP.full && !was_full) popup("LOOP FULL", "not recording", -1);
 }
 static void loop_out(uint8_t ch, uint8_t n, uint8_t v, void *ctx) { (void)ctx; fx_note(ch, n, v, g_ms, FXS_LOOP); }
 static void arp_out(uint8_t n, uint8_t v, bool on, void *ctx)
@@ -163,13 +163,11 @@ bool app_notes_held(void)
 }
 bool app_pad_held(void) { for (int i = 0; i < 8; i++) if (pv[i].held) return true; return false; }
 
-static void all_notes_off(void)
+static void all_notes_off(void)                     /* what the player is holding; the loop keeps playing */
 {
     for (int i = 0; i < 25; i++) voice_stop(&kv[i]);
     for (int i = 0; i < 8; i++) voice_stop(&pv[i]);
     arp_clear(&ARP);
-    fx_panic();
-    for (int n = 0; n < 128; n++) U.note_count[n] = 0;     /* fx_panic already sent the offs, on their own channels */
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -207,6 +205,7 @@ static void popup(const char *title, const char *value, int bar)
 {
     snprintf(U.pop_title, sizeof U.pop_title, "%s", title);
     snprintf(U.pop_value, sizeof U.pop_value, "%s", value);
+    U.pop_tag[0] = 0;
     U.pop_bar = (int16_t)bar; U.pop_until = g_ms + 1200;
 }
 
@@ -269,12 +268,11 @@ static uint16_t saved_edits;
 
 static bool pattern_dirty(void) { return LOOP.edits != saved_edits; }
 
+/* Writing flash stalls the CPU for ~0.15 s. Sounding notes just ring that much longer; their note-offs follow. */
 static void pattern_persist(void)                    /* write the current pattern to its slot if it changed */
 {
     if (!pattern_dirty()) return;
-    if (LOOP.recording) looper_record(&LOOP, false);
-    for (int n = 0; n < LOOP.nsnd; n++) raw_note(LOOP.snd[n].ch, LOOP.snd[n].note, 0);   /* flash stalls ~0.15 s */
-    LOOP.nsnd = 0;
+    looper_new_pass(&LOOP);                          /* recording: close held notes so the saved copy has their offs */
     if (looper_empty(&LOOP)) pattern_erase(U.slot);
     else { pattern_ctx_t c = { S.bpm, S.sound, S.root, S.loop_len, S.voicing }; pattern_save(U.slot, &LOOP, &c); }
     saved_edits = LOOP.edits;
@@ -292,18 +290,20 @@ static void pattern_apply(int slot)                  /* make `slot` current (loo
     } else looper_clear(&LOOP);                      /* empty pattern: start fresh, keep the current sound */
     U.slot = (int8_t)slot; S.cur_pattern = (uint8_t)slot;
     saved_edits = LOOP.edits;
+    U.undo_ready = false;                            /* a repeat must never restore into a different pattern */
     sync_all(); settings_touch();
 }
 
-/* ---- undo momentum: repeating a destructive shortcut right away (nothing else touched) restores it ---- */
-enum { UNDO_NONE, UNDO_CLEAR_CH, UNDO_CLEAR_PAT, UNDO_UNDO };
+/* ---- undo momentum: repeating a destructive shortcut right away (nothing else touched) restores it.
+ * Undo / clear channel / clear the current pattern only hide events in the looper (instant, no flash write, the
+ * rest keeps playing); the hidden events are dropped as soon as anything else is touched. Reverting a generated
+ * pattern and clearing another pattern slot go through the hidden flash slot instead. ---- */
+enum { UNDO_NONE, UNDO_CLEAR_CH, UNDO_CLEAR_PAT, UNDO_UNDO, UNDO_REVERT };
 static uint8_t undo_kind; static int8_t undo_pad;
 
 static void snapshot_current(void)                   /* current loop -> hidden undo slot */
 {
-    if (LOOP.recording) looper_record(&LOOP, false);
-    for (int n = 0; n < LOOP.nsnd; n++) raw_note(LOOP.snd[n].ch, LOOP.snd[n].note, 0);   /* flash stall */
-    LOOP.nsnd = 0;
+    looper_new_pass(&LOOP);
     if (looper_empty(&LOOP)) pattern_erase(UNDO_SLOT);
     else { pattern_ctx_t c = { S.bpm, S.sound, S.root, S.loop_len, S.voicing }; pattern_save(UNDO_SLOT, &LOOP, &c); }
 }
@@ -367,13 +367,14 @@ static void pad_on(int pad, uint8_t vel)
         char v[16];
         U.rec_clear = 2; U.can_revert = false;
         if (undo_repeat(UNDO_CLEAR_PAT, pad)) {               /* same again right away: bring it back */
-            if (pad == U.slot) { restore_current(); pattern_persist(); }
+            bool ok = true;
+            if (pad == U.slot) { ok = looper_restore(&LOOP) > 0; pattern_persist(); }
             else pattern_copy(pad, UNDO_SLOT);
             U.undo_ready = false;
-            snprintf(v, sizeof v, "P%d", pad + 1); popup("RESTORED", v, -1);
+            snprintf(v, sizeof v, "P%d", pad + 1); popup(ok ? "RESTORED" : "NOT KEPT", v, -1);
             return;
         }
-        if (pad == U.slot) { snapshot_current(); looper_clear(&LOOP); pattern_persist(); }
+        if (pad == U.slot) { looper_clear_all(&LOOP); pattern_persist(); }
         else { pattern_copy(UNDO_SLOT, pad); pattern_erase(pad); if (U.pending_slot == pad) U.pending_slot = -1; }
         undo_arm(UNDO_CLEAR_PAT, pad);
         snprintf(v, sizeof v, "P%d empty", pad + 1); popup("CLEARED", v, -1);
@@ -409,6 +410,7 @@ static const char *const STUTTER_NAMES[5] = { "Off", "1/4", "1/8", "1/16", "1/32
 static const char *const SPEED_NAMES[3] = { "Half time", "Normal", "Double time" };
 static uint8_t stutter;                              /* performance control, not saved */
 static void stutter_set(uint8_t s);
+static void loop_moved(void);
 
 static void knob(int k, int d)
 {
@@ -451,14 +453,18 @@ static void knob(int k, int d)
                   S.sound = s;
                   S.voicing = sound_is_style(s) ? PACKS[s - (SCALE_COUNT - 1)].voicing : SCALE_VOICING[s];   /* preset */
                   char t[20]; snprintf(t, sizeof t, "%s - %s", sound_is_style(s) ? "STYLE" : "SCALE", VOICE_NAMES[S.voicing]);
-                  popup(t, sound_name(s), -1); } } break;
+                  popup(t, sound_name(s), -1);
+                  if (sound_is_style(s)) snprintf(U.pop_tag, sizeof U.pop_tag, "%03d", s - (SCALE_COUNT - 1) + 1); } } break;
     case 2: if (step_enum(k, d, &S.voicing, 0, VOICE_COUNT - 1)) { for (int i = 0; i < 8; i++) voice_stop(&pv[i]); popup("VOICING", VOICE_NAMES[S.voicing], -1); } break;
     case 3: step_enum(k, d, &S.fx_octaver, 0, OCT_COUNT - 1); popup("OCTAVER", OCTAVER_NAMES[S.fx_octaver], -1); break;
     case 4: { uint8_t ch = S.midi_ch;                 /* K5: MIDI channel for what you play next */
               if (step_enum(k, d, &ch, 0, 15)) set_midi_channel(ch);
               snprintf(v, sizeof v, "Ch %d", S.midi_ch + 1); popup("MIDI CHANNEL", v, -1); } break;
     case 5: step_enum(k, d, &S.fx_harmony, 0, HARM_COUNT - 1); popup("SHADOW HARMONY", HARMONY_NAMES[S.fx_harmony], -1); break;
-    case 6: if (step_enum(k, d, &S.loop_len, 0, LOOP_LEN_COUNT - 1)) popup("LOOP LENGTH", LOOP_LEN_NAMES[S.loop_len], -1); break;
+    case 6: if (step_enum(k, d, &S.loop_len, 0, LOOP_LEN_COUNT - 1)) {
+                popup("LOOP LENGTH", LOOP_LEN_NAMES[S.loop_len], -1);
+                sync_all(); loop_moved();            /* a longer loop puts the playhead elsewhere */
+            } break;
     case 7: S.bpm = (uint16_t)clampi(S.bpm + d, 40, 300); snprintf(v, sizeof v, "%d BPM", S.bpm); popup("TEMPO", v, -1); break;
     }
     sync_all(); settings_touch();
@@ -504,17 +510,26 @@ void menu_adjust(int sel, int d)
 
 /* ------------------------------------------------------------------ looper transport */
 /* The loop position is an accumulator of 96 PPQN units, advanced on every clock tick by 4 (2 at half time, 8 at
- * double time). It is reset by loop start, MIDI Start/SPP and the clock-in reset, so with an external clock the
- * loop stays on the external bar grid. Stutter remaps it onto a short repeating slice. */
-static uint32_t loop_acc, loop_acc_ms, stut_start;
+ * double time). It is set by loop start, MIDI Start/Continue/SPP and the clock-in reset, so with an external clock
+ * the loop stays on the external bar grid. Stutter remaps it onto a short repeating slice. */
+static int32_t loop_acc;                             /* position at the last clock tick (can be < 0 before a start) */
+static uint32_t loop_acc_ms, stut_start;
+static bool loop_hold;                               /* after Start/SPP: the next clock tick lands on loop_acc itself */
+static int32_t cue_acc; static bool cue_hold;        /* where a MIDI Continue resumes: the SPP, or where Stop paused */
 static uint16_t last_raw;
 static uint32_t loop_step(void) { return S.fx_speed == 0 ? 2 : S.fx_speed == 2 ? 8 : 4; }
 
-static uint16_t loop_raw_now(void)
+static int32_t loop_frac(void)                       /* units elapsed since the last tick, interpolated */
 {
+    if (loop_hold) return 0;
     uint32_t mpt = tempo_ms_per_tick(); if (!mpt) mpt = 1;
     uint32_t st = loop_step(), frac = (g_ms - loop_acc_ms) * st / mpt; if (frac > st - 1) frac = st - 1;
-    return (uint16_t)((loop_acc + frac) % LOOP.length);
+    return (int32_t)frac;
+}
+static uint16_t loop_raw_now(void)
+{
+    int32_t p = (loop_acc + loop_frac()) % (int32_t)LOOP.length;
+    return (uint16_t)(p < 0 ? p + LOOP.length : p);
 }
 
 static uint16_t loop_now(void)
@@ -534,13 +549,35 @@ static void stutter_set(uint8_t s)
     if (!s && LOOP.playing) looper_jump(&LOOP, raw);                /* released: back to the real position */
 }
 
-static void loop_start(void)
+/* (Re)start playback at accumulator position `acc`. A running loop is moved there without firing what lies in
+ * between: whatever was sounding is released first, so a jump can neither burst notes nor leave one hanging. */
+static void loop_start_at(int32_t acc, bool hold)
 {
-    looper_play(&LOOP, true);
-    loop_acc = 0; loop_acc_ms = g_ms; last_raw = 0;
+    if (LOOP.playing) looper_jump(&LOOP, 0); else looper_play(&LOOP, true);
+    loop_acc = acc; loop_acc_ms = g_ms; loop_hold = hold; stutter = 0;
     uint16_t now = loop_now();
+    last_raw = now;
     LOOP.pos = (uint16_t)((now + LOOP.length - 1) % LOOP.length);
     looper_advance(&LOOP, now);                      /* fire events sitting exactly on the start position */
+}
+static void loop_start(void) { loop_start_at(0, false); }
+
+/* Follow an external position (MIDI Start/Continue/SPP, TE1 reset). If the loop is already there (within two
+ * ticks: a DAW re-sending its position at each of its own loop wraps, a reset pulse every bar), leave it alone. */
+static void loop_seek(int32_t acc, bool hold)
+{
+    int32_t len = LOOP.length, want = acc % len; if (want < 0) want += len;
+    int32_t d = (int32_t)loop_raw_now() - want;
+    if (d > len / 2) d -= len; else if (d < -len / 2) d += len;
+    int32_t tol = 2 * (int32_t)loop_step();
+    if (d < -tol || d > tol) loop_start_at(acc, hold);
+}
+
+static void loop_moved(void)                         /* the position jumped (loop length changed): no burst */
+{
+    if (!LOOP.playing) return;
+    looper_jump(&LOOP, loop_now());
+    last_raw = loop_raw_now();
 }
 
 static void loop_update_inner(void);
@@ -556,10 +593,11 @@ static void loop_update_inner(void)
     uint16_t raw = loop_raw_now();
     if (U.pending_slot >= 0 && raw < last_raw) {     /* wrapped: switch to the queued pattern on the boundary */
         looper_advance(&LOOP, (uint16_t)(LOOP.length - 1));
+        pattern_persist();                           /* edits made after the switch was queued */
         pattern_apply(U.pending_slot);
         U.pending_slot = -1;
         stutter = 0;
-        loop_acc = raw;                              /* the new pattern starts on this boundary */
+        loop_acc = (int32_t)raw - loop_frac();       /* the new pattern starts on this boundary */
         LOOP.pos = (uint16_t)(LOOP.length - 1);
         raw = loop_raw_now();
     }
@@ -605,15 +643,16 @@ static void button_down(int b)
         break;
     case BTN_CC:                                     /* = PLAY */
         if (U.shift) {                               /* SHIFT + PLAY = undo the latest part (or revert a generate) */
-            if (undo_repeat(UNDO_UNDO, 0)) { restore_current(); U.undo_ready = false; popup("REDO", "restored", -1); break; }
+            if (undo_repeat(UNDO_UNDO, 0)) { U.undo_ready = false; popup("REDO", looper_restore(&LOOP) ? "restored" : "nothing kept", -1); break; }
+            if (undo_repeat(UNDO_REVERT, 0)) { restore_current(); U.undo_ready = false; popup("REDO", "restored", -1); break; }
             if (U.can_revert) {
                 snapshot_current();
                 bool playing = LOOP.playing; U.can_revert = false;
                 pattern_apply(U.slot); if (playing && !LOOP.playing) loop_start();
                 popup("REVERT", "saved pattern", -1);
-            } else if (looper_empty(&LOOP)) { popup("UNDO", "nothing to undo", -1); break; }
-            else { snapshot_current(); looper_undo(&LOOP); popup("UNDO", "last part", -1); }
-            undo_arm(UNDO_UNDO, 0);
+                undo_arm(UNDO_REVERT, 0);
+            } else if (looper_undo(&LOOP)) { popup("UNDO", "last part", -1); undo_arm(UNDO_UNDO, 0); }
+            else { U.undo_ready = false; popup("UNDO", "nothing to undo", -1); }
             break;
         }
         if (LOOP.playing) {
@@ -665,13 +704,10 @@ static void button_up(int b)
         if (U.rec_clear == 1) {                      /* SHIFT + REC released without a pad: clear this channel */
             char v[16];
             U.can_revert = false;
-            if (undo_repeat(UNDO_CLEAR_CH, 0)) {
-                restore_current(); U.undo_ready = false;
-                snprintf(v, sizeof v, "Ch %d", S.midi_ch + 1); popup("RESTORED", v, -1);
-            } else {
-                snapshot_current(); looper_clear_channel(&LOOP, S.midi_ch); undo_arm(UNDO_CLEAR_CH, 0);
-                snprintf(v, sizeof v, "Ch %d", S.midi_ch + 1); popup("CLEARED", v, -1);
-            }
+            snprintf(v, sizeof v, "Ch %d", S.midi_ch + 1);
+            if (undo_repeat(UNDO_CLEAR_CH, 0)) { U.undo_ready = false; popup(looper_restore(&LOOP) ? "RESTORED" : "NOT KEPT", v, -1); }
+            else if (looper_clear_channel(&LOOP, S.midi_ch)) { undo_arm(UNDO_CLEAR_CH, 0); popup("CLEARED", v, -1); }
+            else { U.undo_ready = false; popup("NOTHING ON", v, -1); }   /* nothing recorded on this channel */
         }
         U.rec_clear = 0; break;
     case BTN_OCT_UP: oct_up_held = false; break;
@@ -692,6 +728,7 @@ void app_event(const input_ev_t *e)
         U.undo_ready = false; break;
     default: break;
     }
+    if (!U.undo_ready) looper_commit(&LOOP);         /* the undo window closed: forget the hidden events */
     switch (e->type) {
     case EV_KEY_ON: key_on(e->a, e->b); break;
     case EV_KEY_OFF: voice_stop(&kv[e->a]); break;
@@ -750,16 +787,22 @@ void app_midi_in(const uint8_t p[4])
     if (cin == 0x0F) {
         if (p[1] == 0xF8) tempo_midi_clock();
         else if (p[1] == 0xFA || p[1] == 0xFB) {     /* Start / Continue */
-            if (p[1] == 0xFA) { tempo_ext_start(); arp_reset_phase(&ARP); loop_acc = (uint32_t)0 - loop_step(); }
-            if (LOOP.playing || U.loop_resume) { U.loop_resume = false; loop_start(); }
+            if (p[1] == 0xFA) { tempo_ext_start(); arp_reset_phase(&ARP); cue_acc = 0; cue_hold = true; }   /* bar 1 */
+            if (LOOP.playing) loop_seek(cue_acc, cue_hold);
+            else if (U.loop_resume) { U.loop_resume = false; loop_start_at(cue_acc, cue_hold); }
         } else if (p[1] == 0xFC) {                   /* Stop: pause the loop, resume on the next Start */
-            if (LOOP.playing) { uint16_t chans = loop_channels(); looper_play(&LOOP, false); U.loop_resume = true; fx_panic(); midi_panic(chans); }
+            if (LOOP.playing) {
+                uint16_t chans = loop_channels(); cue_acc = loop_acc; cue_hold = loop_hold;
+                looper_play(&LOOP, false); U.loop_resume = true; fx_panic(); midi_panic(chans);
+            }
         }
         return;
     }
     if (cin == 0x3 && p[1] == 0xF2) {               /* Song Position Pointer (in 16ths) */
         uint16_t spp = (uint16_t)(p[2] | p[3] << 7);
-        tempo_song_position(spp); loop_acc = (uint32_t)spp * 24u - loop_step();
+        tempo_song_position(spp);                    /* the next clock is 16th number spp */
+        cue_acc = (int32_t)spp * 6 * (int32_t)loop_step(); cue_hold = true;   /* 6 ticks per 16th, at the loop speed */
+        if (LOOP.playing && tempo_external()) loop_seek(cue_acc, true);       /* free-running: just the cue */
         return;
     }
     if (cin == 0x4 || (cin >= 0x5 && cin <= 0x7)) {
@@ -822,14 +865,18 @@ void app_poll(void)
     if (clkout_high && (int32_t)(g_ms - clkout_until) >= 0) { clockout_set(false); clkout_high = false; }   /* 5 ms pulse */
     uint32_t cts;
     while (clockin_pop(&cts)) tempo_clockin_pulse(cts);
-    if (clockin_reset_pop()) { tempo_clockin_reset(); arp_reset_phase(&ARP); repeat_tick = 0; loop_acc = (uint32_t)0 - loop_step(); }
+    if (clockin_reset_pop()) {                       /* TE1 reset in: the next clock pulse is bar 1 */
+        tempo_clockin_reset(); arp_reset_phase(&ARP); repeat_tick = 0;
+        if (LOOP.playing) loop_seek(0, true);
+    }
     int ticks = tempo_poll();
     ARP.tick_ms = tempo_ms_per_tick();
     for (int t = 0; t < ticks; t++) {
         uint32_t tc = tempo_tick_count() - (uint32_t)(ticks - 1 - t);
         if (tc % 24 == 0) U.beat_ms = g_ms;
         if (S.clock_out && (!tempo_external() || tempo_clockin())) midi1(0xF8);
-        loop_acc += loop_step(); loop_acc_ms = g_ms;
+        if (loop_hold) loop_hold = false; else loop_acc += (int32_t)loop_step();
+        loop_acc_ms = g_ms;
         if (tc % 6 == 0) fx_step16((uint8_t)((tc / 6) & 15), g_ms);   /* trance gate + euclid grid */
         if (S.te_pin2 == 1 && tc % PPQN_DIV[S.clk_out_ppqn & 3] == 0) { clockout_set(true); clkout_until = g_ms + 5; clkout_high = true; }
         loop_update();

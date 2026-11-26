@@ -33,6 +33,28 @@ static void name_of(const theory_cfg_t *c, int key, char *buf, uint8_t *notes, i
 static uint8_t log_notes[256]; static int nlog;
 static void out(uint8_t note, uint8_t vel, bool on, void *ctx) { (void)ctx; (void)vel; if (on && nlog < 256) log_notes[nlog++] = note; }
 
+/* ---- looper invariants: every stored note-on has its note-off, and playback never drones ---- */
+static bool lp_balanced(const looper_t *l)           /* per (channel incl. hidden flag, note): ons - offs = held */
+{
+    static int b[256][128]; memset(b, 0, sizeof b);
+    for (int i = 0; i < l->n; i++) b[l->ev[i].ch][l->ev[i].note] += l->ev[i].vel ? 1 : -1;
+    for (int i = 0; i < l->nheld; i++) b[l->held[i].ch][l->held[i].note]--;
+    for (int c = 0; c < 256; c++) for (int n = 0; n < 128; n++) if (b[c][n]) return false;
+    return true;
+}
+static int32_t dt_now, d_on[16][128]; static int d_drones, d_sound, d_len, d_out_ch[16];
+static void d_reset(int len) { dt_now = 0; d_drones = 0; d_sound = 0; d_len = len; for (int c = 0; c < 16; c++) { d_out_ch[c] = 0; for (int n = 0; n < 128; n++) d_on[c][n] = -1; } }
+static void dout(uint8_t ch, uint8_t n, uint8_t v, void *c)
+{
+    (void)c; CHECK(ch < 16);                          /* a hidden event must never reach the output */
+    ch &= 15;
+    if (v) { if (d_on[ch][n] < 0) d_sound++; d_on[ch][n] = dt_now; d_out_ch[ch]++; }
+    else if (d_on[ch][n] >= 0) { if (dt_now - d_on[ch][n] >= d_len) d_drones++; d_on[ch][n] = -1; d_sound--; }
+}
+static void dplay(looper_t *l, int units) { for (int i = 0; i < units; i++) { dt_now++; looper_advance(l, (uint16_t)((l->pos + 1) % l->length)); } }
+static int d_stuck(void) { int k = 0; for (int c = 0; c < 16; c++) for (int n = 0; n < 128; n++) if (d_on[c][n] >= 0 && dt_now - d_on[c][n] >= d_len) k++; return k; }
+static uint32_t trs = 12345; static int trand(int n) { trs ^= trs << 13; trs ^= trs >> 17; trs ^= trs << 5; return (int)(trs % (uint32_t)n); }
+
 int main(void)
 {
     theory_cfg_t c = { .root = 0, .scale = 0, .keymap = KEYMAP_SPREAD, .chord_type = CHORD_TRIAD };
@@ -105,7 +127,9 @@ int main(void)
                 if (r == 0 && vo == 0 && strchr(nm2, '*')) { unnamed++; printf("  unnamed: %s pad%d %s\n", PACKS[p].name, pad + 1, nm2); }
             }
         }
-        int k = pack_chord(13, 0, 0, VOICE_SMOOTH, cn, nm2);       /* Jazz 1, pad 1 in C = Dm9 */
+        int jazz1 = -1; for (int p = 0; p < PACK_COUNT; p++) if (!strcmp(PACKS[p].name, "Jazz 1")) jazz1 = p;
+        CHECK(jazz1 >= 0);
+        int k = pack_chord(jazz1, 0, 0, VOICE_SMOOTH, cn, nm2);    /* Jazz 1, pad 1 in C = Dm9 */
         CHECK(!strcmp(nm2, "Dm9")); CHECK(k == 5);
         CHECK(unnamed == 0);
         for (int p = 0; p < PACK_COUNT; p++) {
@@ -113,6 +137,15 @@ int main(void)
             for (int q = p + 1; q < PACK_COUNT; q++) CHECK(strcmp(PACKS[p].name, PACKS[q].name) != 0);
         }
         for (int s = 0; s < SCALE_COUNT; s++) CHECK(SCALE_VOICING[s] < VOICE_COUNT);
+        /* the list is browsed by number: "X 2" directly follows "X 1", and a "X 1" always has a "X 2" after it */
+        for (int p = 0; p < PACK_COUNT; p++) {
+            const char *nm = PACKS[p].name; size_t L = strlen(nm);
+            if (L < 3 || nm[L - 2] != ' ' || nm[L - 1] < '1' || nm[L - 1] > '9') continue;
+            int v = nm[L - 1] - '0'; char want[16];
+            if (v > 1) { snprintf(want, sizeof want, "%.*s %d", (int)(L - 2), nm, v - 1); CHECK(p > 0 && !strcmp(PACKS[p - 1].name, want)); }
+            else { snprintf(want, sizeof want, "%.*s 2", (int)(L - 2), nm); CHECK(p + 1 < PACK_COUNT && !strcmp(PACKS[p + 1].name, want)); }
+            if (v > 1 && (p == 0 || strcmp(PACKS[p - 1].name, want))) printf("  %s is not right after %s\n", nm, want);
+        }
         printf("  %d styles, %d scales, smooth voicing max centre jump %d semitones, %d unnamed\n", PACK_COUNT, SCALE_COUNT, maxjump, unnamed);
         /* spread keymap: neighbouring keys never repeat and always rise */
         for (int s = 0; s < SCALE_COUNT; s++) for (int r = 0; r < 12; r++) {
@@ -143,7 +176,8 @@ int main(void)
         looper_input(l, 0, 50, 0); looper_input(l, 3, 50, 0); run(l, 81, 383); looper_record(l, false);
         looper_erase_note(l, 50, 3); CHECK(l->n == 2 && l->ev[0].ch == 0 && l->ev[1].ch == 0);
         looper_record(l, true); run(l, 0, 60); looper_input(l, 3, 52, 90); run(l, 61, 90); looper_input(l, 3, 52, 0); looper_record(l, false);
-        looper_clear_channel(l, 3); CHECK(l->n == 2); looper_clear_channel(l, 0); CHECK(looper_empty(l));
+        looper_clear_channel(l, 3); CHECK(l->n - l->hidden == 2); looper_clear_channel(l, 0); CHECK(looper_empty(l));
+        looper_commit(l); CHECK(l->n == 0);
         /* note held across the loop end */
         looper_record(l, true); run(l, 1, 350); looper_input(l, 0, 67, 80); run(l, 351, 383); run(l, 0, 30);
         looper_input(l, 0, 67, 0); run(l, 31, 383); looper_record(l, false);
@@ -196,6 +230,170 @@ int main(void)
         CHECK(sounding == 0);
     }
 
+
+    /* ---- record / overdub / undo / clear, several channels (regressions for stuck notes and lost parts) ---- */
+    {   /* a note released on the very spot it started (fast tap, short arp gate) used to play forever */
+        looper_t *l = &LP; looper_init(l, dout, NULL); looper_set_length(l, 384); d_reset(384);
+        looper_record(l, true); dplay(l, 100); looper_input(l, 0, 60, 100); looper_input(l, 0, 60, 0);
+        dplay(l, 284); looper_record(l, false);
+        CHECK(lp_balanced(l)); dplay(l, 3 * 384); CHECK(d_drones == 0 && d_stuck() == 0);
+    }
+    {   /* event memory full: a stored note-on always gets its note-off */
+        looper_t *l = &LP; looper_init(l, dout, NULL); looper_set_length(l, 384); d_reset(384);
+        looper_record(l, true); looper_input(l, 0, 20, 100);      /* odd count: memory runs out on a note-on */
+        for (int k = 0; k < 400; k++) { looper_input(l, 0, (uint8_t)(30 + k % 60), 100); dplay(l, 1); if (k % 3 == 2) for (int j = 0; j < 3; j++) looper_input(l, 0, (uint8_t)(30 + (k - j) % 60), 0); }
+        for (int n = 0; n < 128; n++) looper_input(l, 0, (uint8_t)n, 0);
+        looper_record(l, false);
+        CHECK(l->full && l->n <= LOOP_MAX_EVENTS && lp_balanced(l));
+        dplay(l, 3 * 384); CHECK(d_drones == 0 && d_stuck() == 0);
+    }
+    {   /* more than 16 notes held while recording (two chord pads + keys) */
+        looper_t *l = &LP; looper_init(l, dout, NULL); looper_set_length(l, 384); d_reset(384);
+        looper_record(l, true); dplay(l, 10);
+        for (int n = 0; n < 24; n++) looper_input(l, 0, (uint8_t)(48 + n), 100);
+        dplay(l, 50); for (int n = 0; n < 24; n++) looper_input(l, 0, (uint8_t)(48 + n), 0);
+        looper_record(l, false); CHECK(lp_balanced(l));
+        dplay(l, 3 * 384); CHECK(d_drones == 0 && d_stuck() == 0);
+    }
+    {   /* the loop is shortened: notes past the new end stay silent, notes crossing it end at the loop end */
+        looper_t *l = &LP; looper_init(l, dout, NULL); looper_set_length(l, 4 * 384); d_reset(384);
+        looper_insert(l, 500, 0, 60, 100); looper_insert(l, 600, 0, 60, 0);     /* entirely past bar 1 */
+        looper_insert(l, 100, 0, 64, 100); looper_insert(l, 500, 0, 64, 0);     /* crosses the end of bar 1 */
+        looper_set_length(l, 384); looper_play(l, true);
+        dplay(l, 4 * 384); CHECK(d_drones == 0 && d_stuck() == 0); CHECK(d_on[0][60] < 0);
+    }
+    {   /* the reported case: chords on ch 1, a part on ch 2 recorded right after switching channel, then
+           clear ch 2 / undo: ch 1 keeps playing, nothing hangs, and the repeat brings ch 2 back */
+        theory_cfg_t kt = { .root = 0, .scale = SC_MINOR };
+        fx_cfg_t fc = { .theory = &kt, .out = fxout };
+        fx_init(&fc); memset(chbal, 0, sizeof chbal);
+        looper_t *l = &LP; looper_init(l, lfx, NULL); looper_set_length(l, 384);
+        uint8_t chord[4]; int nc = scale_chord(SC_MINOR, 0, 0, F_7, 0, chord, NULL);
+        uint32_t now = 40000;
+        #define STEP_TO(target) do { while (l->pos != (target)) { now++; lfx_now = now; looper_advance(l, (uint16_t)((l->pos + 1) % 384)); fx_poll(now); } } while (0)
+        #define LIVE_NOTE(ch, n, v) do { fx_note((ch), (n), (v), now, FXS_LIVE); looper_input(l, (ch), (n), (v)); } while (0)
+        looper_play(l, true); looper_record(l, true);
+        STEP_TO(10);  for (int i = 0; i < nc; i++) LIVE_NOTE(0, chord[i], 100);
+        STEP_TO(370); for (int i = 0; i < nc; i++) LIVE_NOTE(0, chord[i], 0);
+        STEP_TO(383); looper_new_pass(l);                   /* K5 -> ch 2 while recording */
+        STEP_TO(100); LIVE_NOTE(1, 72, 100); STEP_TO(150); LIVE_NOTE(1, 72, 0);
+        STEP_TO(200); LIVE_NOTE(1, 74, 100); STEP_TO(250); LIVE_NOTE(1, 74, 0);
+        STEP_TO(383); looper_record(l, false);
+        STEP_TO(220);                                       /* ch 1 chord and ch 2 note both sounding */
+        CHECK(chbal[0][chord[0]] && chbal[1][74]);
+        CHECK(looper_clear_channel(l, 1) == 4);             /* SHIFT + REC on ch 2 */
+        CHECK(chbal[0][chord[0]] && chbal[0][chord[nc - 1]] && !chbal[1][74]);   /* ch 1 untouched, ch 2 released */
+        STEP_TO(383); STEP_TO(260); CHECK(chbal[0][chord[0]]);
+        int ch2 = 0; for (int n = 0; n < 128; n++) ch2 += chbal[1][n]; CHECK(ch2 == 0);
+        CHECK(looper_restore(l) == 4);                      /* SHIFT + REC again right away */
+        STEP_TO(383); STEP_TO(120); CHECK(chbal[1][72] && chbal[0][chord[0]]);
+        CHECK(looper_undo(l) == 4);                         /* SHIFT + PLAY: the latest part is ch 2 only */
+        CHECK(chbal[0][chord[0]] && !chbal[1][72]);
+        looper_commit(l); CHECK(l->n == 2 * nc && lp_balanced(l));
+        looper_play(l, false); fx_run(now, now + 200); CHECK(ch_sounding() == 0);
+        #undef STEP_TO
+        #undef LIVE_NOTE
+    }
+    {   /* undo / clear while recording with keys still held, then restore: no note-on without its note-off */
+        looper_t *l = &LP; looper_init(l, dout, NULL); looper_set_length(l, 384); d_reset(384);
+        looper_record(l, true); dplay(l, 20);
+        looper_input(l, 0, 60, 100); looper_input(l, 2, 62, 100); dplay(l, 30);
+        CHECK(looper_clear_channel(l, 2) == 2 && lp_balanced(l));   /* ch 3 key still down */
+        CHECK(looper_restore(l) == 2 && lp_balanced(l));
+        looper_input(l, 2, 62, 0);                          /* released after the restore: not stored twice */
+        CHECK(looper_undo(l) == 4 && lp_balanced(l) && l->recording && l->nheld == 0);
+        looper_input(l, 0, 60, 0); CHECK(looper_restore(l) == 4 && lp_balanced(l));
+        looper_record(l, false); dplay(l, 3 * 384); CHECK(d_drones == 0 && d_stuck() == 0);
+        looper_play(l, false); CHECK(d_sound == 0);
+    }
+    {   /* restorable edits: hidden events are silent, take no part in undo, and memory is reclaimed */
+        looper_t *l = &LP; looper_init(l, dout, NULL); looper_set_length(l, 384); d_reset(384);
+        looper_insert(l, 10, 0, 60, 100); looper_insert(l, 50, 0, 60, 0);
+        looper_record(l, true); dplay(l, 100); looper_input(l, 1, 64, 100); dplay(l, 20); looper_input(l, 1, 64, 0); looper_record(l, false);
+        CHECK(looper_clear_all(l) == 4 && looper_empty(l) && d_sound == 0);
+        d_out_ch[0] = d_out_ch[1] = 0; dplay(l, 400); CHECK(d_out_ch[0] == 0 && d_out_ch[1] == 0);
+        CHECK(looper_undo(l) == 0);                         /* commits the clear; nothing left to undo */
+        CHECK(l->n == 0 && looper_restore(l) == 0);
+    }
+    {   /* the same chord overdubbed twice on one channel, mutated, then one pass undone: nothing may drone */
+        looper_t *l = &LP; looper_init(l, dout, NULL); looper_set_length(l, 384); d_reset(384);
+        uint8_t ch3[4]; int n3 = scale_chord(SC_DORIAN, 2, 0, 0, 0, ch3, NULL);
+        for (int pass = 0; pass < 2; pass++) {
+            looper_record(l, true); dplay(l, 40 + pass * 30);
+            for (int i = 0; i < n3; i++) looper_input(l, 0, ch3[i], 100);
+            dplay(l, 200); for (int i = 0; i < n3; i++) looper_input(l, 0, ch3[i], 0);
+            dplay(l, 384 - 240 - pass * 30); looper_record(l, false);
+        }
+        for (uint32_t sd = 1; sd < 30; sd++) gen_mutate(l, &gen_t, 100, sd);
+        CHECK(looper_undo(l) == 2 * n3); looper_commit(l); CHECK(lp_balanced(l));
+        d_reset(384); dplay(l, 3 * 384); CHECK(d_drones == 0 && d_stuck() == 0);
+    }
+    {   /* the same note twice on one spot (same chord overdubbed with quantize, two pads sharing a note,
+           Generate), played inside a strum group: the retrigger used to leave the note on at the synth */
+        theory_cfg_t kt = { .root = 0, .scale = SC_MINOR };
+        fx_cfg_t fc = { .theory = &kt, .out = fxout, .strum_ms = 6 };
+        fx_init(&fc); memset(chbal, 0, sizeof chbal);
+        looper_t *l = &LP; looper_init(l, lfx, NULL); looper_set_length(l, 384);
+        looper_insert(l, 96, 0, 60, 100); looper_insert(l, 96, 0, 60, 90); looper_insert(l, 96, 0, 64, 90);
+        looper_insert(l, 200, 0, 60, 0); looper_insert(l, 250, 0, 60, 0); looper_insert(l, 200, 0, 64, 0);
+        uint32_t now = 60000; looper_play(l, true);
+        for (int lap = 0; lap < 3; lap++) for (int pos = 0; pos < 384; pos++, now++) {
+            lfx_now = now; fx_group_begin(); looper_advance(l, (uint16_t)pos); fx_group_end(now); fx_poll(now);
+        }
+        looper_play(l, false); fx_run(now, now + 100); CHECK(ch_sounding() == 0);
+        /* a note-on fired and released inside one group (queued pattern switch on the last tick) */
+        lfx_now = now; looper_play(l, true); l->pos = 95;
+        fx_group_begin(); looper_advance(l, 96); looper_clear(l); fx_group_end(now);
+        fx_run(now, now + 100); CHECK(ch_sounding() == 0);
+        looper_play(l, false);
+    }
+    {   /* held exactly one loop, and longer than one loop: sustains the whole loop (not a blip, not a drone) */
+        looper_t *l = &LP; looper_init(l, dout, NULL); looper_set_length(l, 384); d_reset(384);
+        looper_record(l, true); dplay(l, 100); looper_input(l, 0, 60, 100); dplay(l, 384); looper_input(l, 0, 60, 0);
+        dplay(l, 50); looper_input(l, 0, 62, 100); dplay(l, 500); looper_input(l, 0, 62, 0); looper_record(l, false);
+        CHECK(lp_balanced(l) && l->ev[1].pos == 99 && l->ev[3].pos == (uint16_t)((150 - 1 + 384) % 384));
+        dplay(l, 3 * 384); CHECK(d_drones == 0 && d_stuck() == 0);
+    }
+    for (uint32_t seed = 1; seed <= 200; seed++) {           /* Generate through the effects with strum: nothing hangs */
+        theory_cfg_t kt = gen_t; fx_cfg_t fc = { .theory = &kt, .out = fxout, .strum_ms = 5, .echo = 2, .echo_ms = 40 };
+        fx_init(&fc); memset(chbal, 0, sizeof chbal);
+        looper_t *l = &LP; looper_init(l, lfx, NULL); looper_set_length(l, (uint16_t)(384 << (seed % 3)));
+        gen_generate(l, &gen_t, gen_chord, (uint8_t)(seed % 4), seed);
+        uint32_t now = 100000; looper_play(l, true);
+        for (int lap = 0; lap < 2; lap++) for (int pos = 0; pos < l->length; pos += 3, now++) {
+            lfx_now = now; fx_group_begin(); looper_advance(l, (uint16_t)pos); fx_group_end(now); fx_poll(now);
+        }
+        looper_play(l, false); fx_run(now, now + 400);
+        int st = ch_sounding(); CHECK(st == 0); if (st) printf("  generate seed %u: %d stuck\n", seed, st);
+    }
+    for (int seed = 1; seed <= 60; seed++) {                /* random jam: notes on 4 channels, every edit */
+        looper_t *l = &LP; int len = (seed % 3 + 1) * 192; trs = (uint32_t)seed * 2654435761u | 1;
+        looper_init(l, dout, NULL); looper_set_length(l, (uint16_t)len); d_reset(len); l->quant = seed % 4 == 0 ? 24 : 0;
+        static bool held[16][128]; memset(held, 0, sizeof held); int cur = 0, bad = 0;
+        looper_play(l, true);
+        for (int step = 0; step < 2500; step++) {
+            dplay(l, trand(6));
+            int r = trand(100), n = 40 + trand(40);
+            if (r < 32) { if (!held[cur][n]) { held[cur][n] = true; looper_input(l, (uint8_t)cur, (uint8_t)n, 100); } }
+            else if (r < 58) { for (int c = 0; c < 4; c++) if (held[c][n]) { held[c][n] = false; looper_input(l, (uint8_t)c, (uint8_t)n, 0); } }
+            else if (r < 63) looper_record(l, !l->recording);
+            else if (r < 67) { cur = trand(4); looper_new_pass(l); }
+            else if (r < 70) looper_undo(l);
+            else if (r < 73) looper_clear_channel(l, (uint8_t)cur);
+            else if (r < 77) looper_restore(l);
+            else if (r < 79) looper_commit(l);
+            else if (r < 80) looper_clear_all(l);
+            else if (r < 81) looper_jump(l, (uint16_t)trand(len));
+            if (!lp_balanced(l)) bad++;
+            if (l->n > LOOP_MAX_EVENTS || l->hidden > l->n) bad++;
+        }
+        for (int c = 0; c < 16; c++) for (int n = 0; n < 128; n++) if (held[c][n]) looper_input(l, (uint8_t)c, (uint8_t)n, 0);
+        looper_record(l, false); looper_commit(l);
+        CHECK(bad == 0 && lp_balanced(l));
+        dplay(l, 3 * len); CHECK(d_drones == 0 && d_stuck() == 0);
+        if (d_drones || d_stuck()) printf("  seed %d: %d drones, %d stuck\n", seed, d_drones, d_stuck());
+        looper_play(l, false); CHECK(d_sound == 0);
+    }
     /* MIDI effects */
     {
         theory_cfg_t kt = { .root = 0, .scale = SC_MAJOR };

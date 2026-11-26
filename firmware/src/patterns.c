@@ -15,6 +15,7 @@ typedef struct {
 } pat_hdr_t;   /* 20 bytes, followed by n loop_ev_t */
 
 _Static_assert(sizeof(pat_hdr_t) + LOOP_MAX_EVENTS * sizeof(loop_ev_t) <= PAT_SIZE, "pattern slot too small");
+_Static_assert(sizeof(loop_ev_t) % 2 == 0, "events are programmed one by one, in half-words");
 
 static const pat_hdr_t *hdr(int slot) { return (const pat_hdr_t *)(PAT_BASE + (uint32_t)slot * PAT_SIZE); }
 static uint16_t sum16(const void *p, uint32_t n) { const uint8_t *b = p; uint16_t s = 0; while (n--) s = (uint16_t)(s + *b++); return s; }
@@ -30,12 +31,17 @@ bool pattern_save(int slot, const looper_t *l, const pattern_ctx_t *ctx)
 {
     if (slot < 0 || slot >= PATTERN_SLOTS) return false;
     uint32_t a = PAT_BASE + (uint32_t)slot * PAT_SIZE;
-    uint8_t maxl = 0;
-    for (int i = 0; i < l->n; i++) if (l->ev[i].layer > maxl) maxl = l->ev[i].layer;
-    pat_hdr_t h = { PAT_MAGIC, l->n, l->length, ctx->bpm, sum16(l->ev, l->n * sizeof(loop_ev_t)),
+    uint8_t maxl = 0; uint16_t n = 0, sum = 0;
+    for (int i = 0; i < l->n; i++) {                      /* only audible events: hidden ones are undone edits */
+        if (!looper_ev_visible(&l->ev[i])) continue;
+        if (l->ev[i].layer > maxl) maxl = l->ev[i].layer;
+        sum = (uint16_t)(sum + sum16(&l->ev[i], sizeof(loop_ev_t))); n++;
+    }
+    pat_hdr_t h = { PAT_MAGIC, n, l->length, ctx->bpm, sum,
                     ctx->sound, ctx->root, ctx->loop_len, maxl, ctx->voicing, { 0, 0, 0 } };
     flash_erase_page(a); flash_erase_page(a + FLASH_PAGE);
-    flash_program(a + sizeof h, l->ev, l->n * sizeof(loop_ev_t));
+    uint32_t p = a + sizeof h;
+    for (int i = 0; i < l->n; i++) if (looper_ev_visible(&l->ev[i])) { flash_program(p, &l->ev[i], sizeof(loop_ev_t)); p += sizeof(loop_ev_t); }
     flash_program(a, &h, sizeof h);                       /* header last: a torn write reads as empty */
     return pattern_exists(slot);
 }

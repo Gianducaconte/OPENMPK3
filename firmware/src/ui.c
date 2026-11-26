@@ -158,6 +158,7 @@ static void note_view(void)
 static void popup_draw(void)
 {
     gfx_text(0, ROW_TOP, U.pop_title, 1);
+    if (U.pop_tag[0]) gfx_text(128 - gfx_text_width(U.pop_tag, 1), ROW_TOP, U.pop_tag, 1);   /* style number */
     gfx_text_fit(0, ROW_VAL, U.pop_value, 128);
 }
 

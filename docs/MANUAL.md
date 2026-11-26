@@ -18,7 +18,7 @@
 | Control | Function |
 |---|---|
 | **K1** | Key (root note) |
-| **K2** | Scale or style: one list with 35 scales first, then 103 styles |
+| **K2** | Scale or style: one list with 35 scales first, then 103 styles (numbered 001-103) |
 | **K3** | Voicing of the pad chords: Smooth, +Bass, Open, Wide, High, Low |
 
 **Scales.** The keys play the scale. Pads 1-7 play its chords (I to VII) and pad 8 plays the I chord higher.
@@ -40,18 +40,20 @@ Wide or Open, gospel loads +Bass, cinematic styles load Wide, and so on. The pop
 `STYLE - Wide`. You can change it afterwards with K3, and a saved pattern remembers the voicing you used.
 
 **Styles.** The pads play the style's 8 chords and the keys play its matching scale. Every chord uses only notes of
-that scale. The families:
+that scale. Styles are grouped by family, with variants next to each other (Jazz 1, Jazz 2, ...). While you turn K2,
+the popup shows the style's number top right, so you can find it again:
 
-- **Pop:** Pop 1-4, Ballad, Dance/EDM, K-Pop Anime, Hyperpop, Tropical, Reggae, Country, Lullaby, Romantic, 8-Bit Game
-- **Emotional and cinematic:** Sad 1-4, Cinematic 1-4, Heroic, Fantasy, Fairytale, Thriller, Horror, Spy Movie, Noir,
-  Sci-Fi, Dream, Ambient, Ethereal
-- **Jazz and soul:** Jazz 1-6, Bossa 1-2, Bebop, Latin, Tango, Neo Soul 1-3, R&B, Soul 70s, Funk, Gospel 1-2,
-  Lo-Fi 1-3, Chill Hop, City Pop 1-2, Blues
-- **Rock:** Post-Rock, Shoegaze, Math Rock, Punk, Metal
-- **Electronic:** Vaporwave 1-3, Synthwave 1-4, Techno 1-3, House 1-2, Afro House, UK Garage, Drum & Bass, Dubstep,
-  Disco Funk, Amapiano, Rave, Trap Dark
-- **World:** Napoli 1-2, Flamenco, Middle East, Balkan, Klezmer, Indian 1-2, Bollywood, Japan, Japan In, China,
-  Bali Gamelan, Afrobeat, Highlife, Ethio Jazz, Celtic 1-2, Lydian Dream
+| No. | Family | Styles |
+|---|---|---|
+| 001-011 | **Pop** | `001` Pop 1 · `002` Pop 2 · `003` Pop 3 · `004` Pop 4 · `005` K-Pop Anime · `006` Dance / EDM · `007` Hyperpop · `008` Tropical · `009` City Pop 1 · `010` City Pop 2 · `011` 8-Bit Game |
+| 012-018 | **Ballads and sad** | `012` Ballad · `013` Romantic · `014` Lullaby · `015` Sad 1 · `016` Sad 2 · `017` Sad 3 · `018` Sad 4 |
+| 019-028 | **Soul, R&B, funk, gospel** | `019` Neo Soul 1 · `020` Neo Soul 2 · `021` Neo Soul 3 · `022` R&B · `023` Soul 70s · `024` Funk · `025` Disco Funk · `026` Gospel 1 · `027` Gospel 2 · `028` Blues |
+| 029-032 | **Lo-Fi** | `029` Lo-Fi 1 · `030` Lo-Fi 2 · `031` Lo-Fi 3 · `032` Chill Hop |
+| 033-043 | **Jazz and Latin** | `033` Jazz 1 · `034` Jazz 2 · `035` Jazz 3 · `036` Jazz 4 · `037` Jazz 5 · `038` Jazz 6 · `039` Bebop · `040` Bossa 1 · `041` Bossa 2 · `042` Latin · `043` Tango |
+| 044-062 | **Electronic** | `044` Synthwave 1 · `045` Synthwave 2 · `046` Synthwave 3 · `047` Synthwave 4 · `048` Vaporwave 1 · `049` Vaporwave 2 · `050` Vaporwave 3 · `051` Techno 1 · `052` Techno 2 · `053` Techno 3 · `054` House 1 · `055` House 2 · `056` Afro House · `057` Amapiano · `058` UK Garage · `059` Drum & Bass · `060` Dubstep · `061` Rave · `062` Trap Dark |
+| 063-067 | **Rock** | `063` Post-Rock · `064` Shoegaze · `065` Math Rock · `066` Punk · `067` Metal |
+| 068-083 | **Cinematic and moods** | `068` Cinematic 1 · `069` Cinematic 2 · `070` Cinematic 3 · `071` Cinematic 4 · `072` Heroic · `073` Fantasy · `074` Fairytale · `075` Thriller · `076` Horror · `077` Spy Movie · `078` Noir · `079` Sci-Fi · `080` Dream · `081` Ethereal · `082` Ambient · `083` Lydian Dream |
+| 084-103 | **World** | `084` Country · `085` Reggae · `086` Celtic 1 · `087` Celtic 2 · `088` Flamenco · `089` Napoli 1 · `090` Napoli 2 · `091` Klezmer · `092` Balkan · `093` Middle East · `094` Indian 1 · `095` Indian 2 · `096` Bollywood · `097` Afrobeat · `098` Highlife · `099` Ethio Jazz · `100` Japan · `101` Japan In · `102` China · `103` Bali Gamelan |
 
 **Keys layout** (menu **Key map**):
 
@@ -78,10 +80,17 @@ The display shows `O+1` for the keys and `PO+1` for the pads, bottom right.
 | **SHIFT + PROG CHANGE, then a pad** | Copy the current pattern to that pad |
 | **SHIFT + REC** (release) | Clear the current MIDI channel in this pattern |
 | **SHIFT + REC + pad** | Clear that pattern completely |
-| **SHIFT + PLAY** | Undo the latest part (any channel) |
+| **SHIFT + PLAY** | Undo the latest part |
 
+- **What a "part" is.** Everything recorded from pressing REC until you turn overdub off, or until you change MIDI
+  channel. Recording on channel 1 and then switching K5 to channel 2 while still recording makes two parts, so undo
+  takes back only the channel 2 part.
 - **Repeat to undo.** If you repeat any of the last three shortcuts straight away, before touching anything else, it
   restores what it removed.
+- **Undo and clear don't interrupt anything.** The rest of the loop keeps sounding, and if you were recording, you
+  still are.
+- **Memory.** A pattern holds about 300 notes. When it's full the screen shows `LOOP FULL` and new notes are played
+  but not recorded. Undo or clear a part to make room.
 - **Saving.** Patterns save to flash by themselves: when you switch away, when you stop, or after a few idle seconds.
 - **What a pattern remembers.** Its notes, loop length, scale/style, key and tempo. When synced to an external clock,
   the external tempo is used instead of the saved one.

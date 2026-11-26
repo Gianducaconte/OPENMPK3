@@ -86,13 +86,14 @@ static void compose(looper_t *l, const theory_cfg_t *t, gen_chord_fn chord, uint
     }
 }
 
-/* matching note-off for the note-on at index i (first off of the same note/channel after it, circularly) */
+/* matching note-off for the note-on at index i: first off of the same note/channel after it, circularly, within the
+ * same recording pass (a pass can be undone on its own, so a pair must never straddle two passes) */
 static int pair_off(const looper_t *l, int i)
 {
     const loop_ev_t *on = &l->ev[i]; int best = -1, bestd = 1 << 30;
     for (int j = 0; j < l->n; j++) {
         const loop_ev_t *e = &l->ev[j];
-        if (e->vel || e->note != on->note || e->ch != on->ch) continue;
+        if (e->vel || e->note != on->note || e->ch != on->ch || e->layer != on->layer) continue;
         int d = ((int)e->pos - (int)on->pos + l->length) % l->length;
         if (d == 0) d = l->length;
         if (d < bestd) { bestd = d; best = j; }
@@ -106,18 +107,19 @@ void gen_mutate(looper_t *l, const theory_cfg_t *t, int percent, uint32_t seed)
     looper_jump(l, l->pos);                          /* release sounding notes before editing pitches */
     for (int i = 0; i < l->n; i++) {
         loop_ev_t *e = &l->ev[i];
-        if (!e->vel || rr(100) >= percent) continue;
+        if (!e->vel || !looper_ev_visible(e) || rr(100) >= percent) continue;   /* hidden = undone, may come back */
         int off = pair_off(l, i);
-        switch (rr(3)) {
+        int kind = off < 0 ? 2 : rr(3);              /* no note-off found: only touch the velocity */
+        switch (kind) {
         case 0: {                                    /* a scale step up or down */
             int q = quantize(t, e->note), d = note_to_degree(t, q) + (rr(2) ? 1 : -1);
             int n = clampi(t->root + scale_degree_offset(t->scale, d), 24, 108);
-            e->note = (uint8_t)n; if (off >= 0) l->ev[off].note = (uint8_t)n;
+            e->note = (uint8_t)n; l->ev[off].note = (uint8_t)n;
             break; }
         case 1: {                                    /* nudge by a 1/16, keeping the length */
             int sh = rr(2) ? STEP : -STEP;
             e->pos = (uint16_t)((e->pos + l->length + sh) % l->length);
-            if (off >= 0) l->ev[off].pos = (uint16_t)((l->ev[off].pos + l->length + sh) % l->length);
+            l->ev[off].pos = (uint16_t)((l->ev[off].pos + l->length + sh) % l->length);
             break; }
         default:                                     /* new velocity */
             e->vel = (uint8_t)clampi(e->vel + rr(51) - 25, 20, 127);
